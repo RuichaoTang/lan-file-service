@@ -1,10 +1,14 @@
 import argparse
+import json
 from pathlib import Path
 import shlex
+import socket
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5001
+CHUNK_SIZE = 4096
+SOCKET_TIMEOUT_SECONDS = 30
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +65,7 @@ def resolve_server_target(
     host = raw_host
     if host is None:
         typed_host = input(
-            f"Enter server IP/hostname. Press Enter to use default: [{DEFAULT_HOST}]: "
+            f"Enter server IP address. Press Enter to use default: [{DEFAULT_HOST}]: "
         ).strip()
         host = typed_host or DEFAULT_HOST
 
@@ -75,6 +79,57 @@ def resolve_server_target(
     if not (1 <= port <= 65535):
         raise ValueError("--port must be between 1 and 65535")
     return host, port
+
+
+def send_upload_header(sock: socket.socket, filename: str, filesize: int) -> None:
+    header = {"command": "UPLOAD", "filename": filename, "size": filesize}
+    sock.sendall((json.dumps(header) + "\n").encode("utf-8"))
+
+
+def send_file_contents(sock: socket.socket, file_path: Path) -> int:
+    sent = 0
+    with file_path.open("rb") as f:
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            sock.sendall(chunk)
+            sent += len(chunk)
+    return sent
+
+
+def recv_server_response(sock: socket.socket) -> str:
+    data = bytearray()
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in chunk:
+            break
+
+    if not data:
+        raise ValueError("No confirmation response from server.")
+    return data.decode("utf-8", errors="replace").strip()
+
+
+def upload_file(
+    host: str, port: int, file_path: Path, filename: str, filesize: int
+) -> str:
+    with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT_SECONDS) as sock:
+        sock.settimeout(SOCKET_TIMEOUT_SECONDS)
+
+        # Server sends a greeting line first; read and ignore if present.
+        _ = recv_server_response(sock)
+
+        send_upload_header(sock, filename, filesize)
+        bytes_sent = send_file_contents(sock, file_path)
+        if bytes_sent != filesize:
+            raise ValueError(
+                f"Sent size mismatch: expected {filesize}, sent {bytes_sent}"
+            )
+
+        return recv_server_response(sock)
 
 
 def main() -> None:
@@ -92,7 +147,10 @@ def main() -> None:
     print(f"Local file: {file_path}")
     print(f"Filename: {filename}")
     print(f"Filesize: {filesize} bytes")
-    print("Ready for next step: sending header and file content.")
+    print("Uploading...")
+
+    response = upload_file(host, port, file_path, filename, filesize)
+    print(f"Server response: {response}")
 
 
 if __name__ == "__main__":
@@ -100,6 +158,10 @@ if __name__ == "__main__":
         main()
     except ValueError as e:
         raise SystemExit(f"Error: {e}")
+    except socket.timeout:
+        raise SystemExit(f"Error: socket timed out after {SOCKET_TIMEOUT_SECONDS}s")
+    except OSError as e:
+        raise SystemExit(f"Error: network failure: {e}")
     except KeyboardInterrupt:
         raise SystemExit("\nCancelled by user.")
     except EOFError:
