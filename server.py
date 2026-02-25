@@ -108,6 +108,25 @@ def receive_file_data(sock: socket.socket, destination: Path, expected_size: int
     return received
 
 
+def safe_send(sock: socket.socket, message: str) -> None:
+    try:
+        sock.sendall(message.encode("utf-8"))
+    except OSError:
+        # Client may already be gone; ignore send failures during cleanup/error paths.
+        pass
+
+
+def cleanup_partial_file(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        # Keep server running even if cleanup fails.
+        pass
+
+
 def start_server(port: int = PORT) -> None:
     # 1) Create a TCP socket (AF_INET + SOCK_STREAM)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -132,6 +151,7 @@ def start_server(port: int = PORT) -> None:
             client_socket, client_addr = server_socket.accept()
             client_socket.settimeout(CLIENT_TIMEOUT_SECONDS)
             print(f"Accepted connection from {client_addr}")
+            destination: Path | None = None
             try:
                 client_socket.sendall(b"Connected.\n")
                 header_line = recv_line(client_socket)
@@ -149,16 +169,20 @@ def start_server(port: int = PORT) -> None:
                 print(ok.strip())
                 client_socket.sendall(ok.encode("utf-8"))
             except socket.timeout:
+                cleanup_partial_file(destination)
                 err = f"Upload error: timed out after {CLIENT_TIMEOUT_SECONDS}s\n"
                 print(err.strip())
-                try:
-                    client_socket.sendall(err.encode("utf-8"))
-                except OSError:
-                    pass
+                safe_send(client_socket, err)
             except ValueError as e:
+                cleanup_partial_file(destination)
                 err = f"Upload error: {e}\n"
                 print(err.strip())
-                client_socket.sendall(err.encode("utf-8"))
+                safe_send(client_socket, err)
+            except OSError as e:
+                cleanup_partial_file(destination)
+                err = f"Upload error: socket I/O failure: {e}\n"
+                print(err.strip())
+                safe_send(client_socket, err)
             finally:
                 client_socket.close()
 
