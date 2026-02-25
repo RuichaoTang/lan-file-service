@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 import socket
 
 
@@ -7,6 +8,9 @@ HOST = "0.0.0.0"  # Listen on all network interfaces
 PORT = 5001
 BACKLOG = 5  # Max queued connections before accept()
 HEADER_MAX_BYTES = 4096
+CHUNK_SIZE = 4096
+SHARED_DIR = Path(__file__).resolve().parent / "shared"
+CLIENT_TIMEOUT_SECONDS = 30
 
 
 def get_local_ip() -> str:
@@ -68,6 +72,42 @@ def parse_upload_header(header_line: str) -> tuple[str, str, int]:
     return command, filename, file_size
 
 
+def get_destination_path(filename: str) -> Path:
+    # Reject directory paths to avoid path traversal and keep uploads in shared/
+    if Path(filename).name != filename:
+        raise ValueError("Filename must not contain path separators.")
+    if filename in {".", ".."}:
+        raise ValueError("Invalid filename.")
+
+    base_path = SHARED_DIR / filename
+    if not base_path.exists():
+        return base_path
+
+    stem = base_path.stem
+    suffix = base_path.suffix
+    counter = 1
+    while True:
+        candidate = SHARED_DIR / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def receive_file_data(sock: socket.socket, destination: Path, expected_size: int) -> int:
+    received = 0
+    with destination.open("wb") as f:
+        while received < expected_size:
+            remaining = expected_size - received
+            chunk = sock.recv(min(CHUNK_SIZE, remaining))
+            if not chunk:
+                raise ValueError(
+                    f"Client disconnected early ({received}/{expected_size} bytes received)."
+                )
+            f.write(chunk)
+            received += len(chunk)
+    return received
+
+
 def start_server(port: int = PORT) -> None:
     # 1) Create a TCP socket (AF_INET + SOCK_STREAM)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -81,25 +121,42 @@ def start_server(port: int = PORT) -> None:
 
         # 3) Start listening; backlog controls pending connection queue size
         server_socket.listen(BACKLOG)
+        SHARED_DIR.mkdir(parents=True, exist_ok=True)
         local_ip = get_local_ip()
         print(f"Server listening on {HOST}:{port} (backlog={BACKLOG})")
         print(f"Clients in LAN can connect to: {local_ip}:{port}")
+        print(f"Shared directory: {SHARED_DIR}")
 
         while True:
             # 4) Accept incoming connection (blocks until a client connects)
             client_socket, client_addr = server_socket.accept()
+            client_socket.settimeout(CLIENT_TIMEOUT_SECONDS)
             print(f"Accepted connection from {client_addr}")
             try:
                 client_socket.sendall(b"Connected.\n")
                 header_line = recv_line(client_socket)
                 command, filename, file_size = parse_upload_header(header_line)
+                if command != "UPLOAD":
+                    raise ValueError(f"Unsupported command: {command}")
+
+                destination = get_destination_path(filename)
                 print(
-                    f"Parsed header from {client_addr}:\n"
-                    f"command={command}, filename={filename}, file_size={file_size}"
+                    f"Receiving upload from {client_addr}: "
+                    f"filename={filename}, size={file_size}, dest={destination}"
                 )
-                client_socket.sendall(b"Header parsed successfully.\n")
+                bytes_written = receive_file_data(client_socket, destination, file_size)
+                ok = f"UPLOAD OK: received {bytes_written} bytes into {destination.name}\n"
+                print(ok.strip())
+                client_socket.sendall(ok.encode("utf-8"))
+            except socket.timeout:
+                err = f"Upload error: timed out after {CLIENT_TIMEOUT_SECONDS}s\n"
+                print(err.strip())
+                try:
+                    client_socket.sendall(err.encode("utf-8"))
+                except OSError:
+                    pass
             except ValueError as e:
-                err = f"Header parse error: {e}\n"
+                err = f"Upload error: {e}\n"
                 print(err.strip())
                 client_socket.sendall(err.encode("utf-8"))
             finally:
