@@ -1,10 +1,12 @@
 import argparse
+import json
 import socket
 
 
 HOST = "0.0.0.0"  # Listen on all network interfaces
 PORT = 5001
 BACKLOG = 5  # Max queued connections before accept()
+HEADER_MAX_BYTES = 4096
 
 
 def get_local_ip() -> str:
@@ -17,6 +19,53 @@ def get_local_ip() -> str:
         return "127.0.0.1"
     finally:
         probe.close()
+
+
+def recv_line(sock: socket.socket, max_bytes: int = HEADER_MAX_BYTES) -> str:
+    data = bytearray()
+    while len(data) < max_bytes:
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        data += chunk
+        if chunk == b"\n":
+            break
+
+    if not data:
+        raise ValueError("No upload header received.")
+    if b"\n" not in data:
+        raise ValueError("Upload header too long or missing newline.")
+
+    return data.decode("utf-8").strip()
+
+
+def parse_upload_header(header_line: str) -> tuple[str, str, int]:
+    # Expected one-line JSON:
+    # {"command":"UPLOAD","filename":"test.txt","size":123}
+    try:
+        header = json.loads(header_line)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid JSON header.") from exc
+
+    if not isinstance(header, dict):
+        raise ValueError("Header JSON must be an object.")
+
+    command = header.get("command")
+    filename = header.get("filename")
+    file_size = header.get("size")
+
+    if not isinstance(command, str) or not command:
+        raise ValueError("Header field 'command' must be a non-empty string.")
+    if not isinstance(filename, str) or not filename:
+        raise ValueError("Header field 'filename' must be a non-empty string.")
+    if not isinstance(file_size, int):
+        raise ValueError("Header field 'size' must be an integer.")
+    if file_size < 0:
+        raise ValueError("Header field 'size' must be non-negative.")
+
+    command = command.upper()
+
+    return command, filename, file_size
 
 
 def start_server(port: int = PORT) -> None:
@@ -40,10 +89,21 @@ def start_server(port: int = PORT) -> None:
             # 4) Accept incoming connection (blocks until a client connects)
             client_socket, client_addr = server_socket.accept()
             print(f"Accepted connection from {client_addr}")
-            client_socket.sendall(b"You are connected to the LAN file server!\n")
-
-            # For now, just close immediately (we will handle data next step)
-            client_socket.close()
+            try:
+                client_socket.sendall(b"Connected.\n")
+                header_line = recv_line(client_socket)
+                command, filename, file_size = parse_upload_header(header_line)
+                print(
+                    f"Parsed header from {client_addr}:\n"
+                    f"command={command}, filename={filename}, file_size={file_size}"
+                )
+                client_socket.sendall(b"Header parsed successfully.\n")
+            except ValueError as e:
+                err = f"Header parse error: {e}\n"
+                print(err.strip())
+                client_socket.sendall(err.encode("utf-8"))
+            finally:
+                client_socket.close()
 
     except KeyboardInterrupt:
         print("\nServer stopped by user.")
