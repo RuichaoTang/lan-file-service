@@ -132,6 +132,11 @@ def upload_file(
         return recv_server_response(sock)
 
 
+def ensure_upload_success(server_response: str) -> None:
+    if not server_response.startswith("UPLOAD OK"):
+        raise ValueError(f"Upload unsuccessful. Server said: {server_response}")
+
+
 def main() -> None:
     args = parse_args()
     host, port = resolve_server_target(args.host, args.port)
@@ -150,6 +155,7 @@ def main() -> None:
     print("Uploading...")
 
     response = upload_file(host, port, file_path, filename, filesize)
+    ensure_upload_success(response)
     print(f"Server response: {response}")
 
 
@@ -160,6 +166,10 @@ if __name__ == "__main__":
         raise SystemExit(f"Error: {e}")
     except socket.timeout:
         raise SystemExit(f"Error: socket timed out after {SOCKET_TIMEOUT_SECONDS}s")
+    except ConnectionRefusedError:
+        raise SystemExit("Error: connection refused. Check server IP/port and server status.")
+    except socket.gaierror as e:
+        raise SystemExit(f"Error: cannot resolve server host: {e}")
     except OSError as e:
         raise SystemExit(f"Error: network failure: {e}")
     except KeyboardInterrupt:
