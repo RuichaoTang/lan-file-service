@@ -1,0 +1,34 @@
+Client
+  |
+  | 1. Connect to server
+  v
+Server
+  |
+  | 2. accept() connection
+  v
+Client -> Server
+  |
+  | 3. Send JSON request header
+  |    (command + metadata + '\n')
+  v
+Server
+  |
+  | 4. Parse JSON command
+  |
+  +-------------------------------+
+  |                               |
+  | LIST / SEARCH                 | DOWNLOAD
+  |                               |
+  v                               v
+Server scans shared directory     Server validates filename
+and builds file metadata list     and reads file metadata
+  |                               |
+  v                               v
+Server sends JSON response        Server sends JSON response header
+(file list + metadata)            (filename + size)
+  |                               |
+  v                               v
+Connection closes                 Server streams binary file data
+                                  |
+                                  v
+                            Connection closes
