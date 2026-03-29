@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 import socket
+import threading
 
 
 HOST = "0.0.0.0"  # Listen on all network interfaces
@@ -104,7 +105,9 @@ def get_existing_file_path(filename: str) -> Path:
     return path
 
 
-def receive_file_data(sock: socket.socket, destination: Path, expected_size: int) -> int:
+def receive_file_data(
+    sock: socket.socket, destination: Path, expected_size: int
+) -> int:
     received = 0
     with destination.open("wb") as f:
         while received < expected_size:
@@ -166,12 +169,12 @@ def search_files(keyword: str) -> list[dict]:
     if not needle:
         raise ValueError("Header field 'keyword' must be a non-empty string.")
 
-    return [
-        info for info in list_files() if needle in info["name"].lower()
-    ]
+    return [info for info in list_files() if needle in info["name"].lower()]
 
 
-def handle_upload(client_socket: socket.socket, header: dict, client_addr: tuple) -> None:
+def handle_upload(
+    client_socket: socket.socket, header: dict, client_addr: tuple
+) -> None:
     destination: Path | None = None
     filename, file_size = parse_upload_header(header)
     destination = get_destination_path(filename)
@@ -252,6 +255,31 @@ def handle_client(client_socket: socket.socket, client_addr: tuple) -> None:
         raise ValueError(f"Unsupported command: {command}")
 
 
+def serve_client(client_socket: socket.socket, client_addr: tuple) -> None:
+    client_socket.settimeout(CLIENT_TIMEOUT_SECONDS)
+    print(f"Accepted connection from {client_addr}")
+
+    try:
+        handle_client(client_socket, client_addr)
+    except socket.timeout:
+        err = {
+            "status": "ERROR",
+            "message": f"Request timed out after {CLIENT_TIMEOUT_SECONDS}s",
+        }
+        print(err["message"])
+        safe_send_json(client_socket, err)
+    except ValueError as e:
+        err = {"status": "ERROR", "message": str(e)}
+        print(f"Request error: {e}")
+        safe_send_json(client_socket, err)
+    except OSError as e:
+        err = {"status": "ERROR", "message": f"socket I/O failure: {e}"}
+        print(f"Request error: {err['message']}")
+        safe_send_json(client_socket, err)
+    finally:
+        client_socket.close()
+
+
 def start_server(port: int = PORT) -> None:
     # 1) Create a TCP socket (AF_INET + SOCK_STREAM)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -272,30 +300,13 @@ def start_server(port: int = PORT) -> None:
         print(f"Shared directory: {SHARED_DIR}")
 
         while True:
-            # 4) Accept incoming connection (blocks until a client connects)
             client_socket, client_addr = server_socket.accept()
-            client_socket.settimeout(CLIENT_TIMEOUT_SECONDS)
-            print(f"Accepted connection from {client_addr}")
-
-            try:
-                handle_client(client_socket, client_addr)
-            except socket.timeout:
-                err = {
-                    "status": "ERROR",
-                    "message": f"Request timed out after {CLIENT_TIMEOUT_SECONDS}s",
-                }
-                print(err["message"])
-                safe_send_json(client_socket, err)
-            except ValueError as e:
-                err = {"status": "ERROR", "message": str(e)}
-                print(f"Request error: {e}")
-                safe_send_json(client_socket, err)
-            except OSError as e:
-                err = {"status": "ERROR", "message": f"socket I/O failure: {e}"}
-                print(f"Request error: {err['message']}")
-                safe_send_json(client_socket, err)
-            finally:
-                client_socket.close()
+            worker = threading.Thread(
+                target=serve_client,
+                args=(client_socket, client_addr),
+                daemon=True,
+            )
+            worker.start()
 
     except KeyboardInterrupt:
         print("\nServer stopped by user.")
