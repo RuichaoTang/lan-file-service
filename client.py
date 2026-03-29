@@ -17,13 +17,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--host",
         default=None,
-        help=f"Server IP/hostname (legacy prompt mode asks if omitted; default: {DEFAULT_HOST})",
+        help=f"Server IP/hostname (default: {DEFAULT_HOST})",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help=f"Server TCP port (legacy prompt mode asks if omitted; default: {DEFAULT_PORT})",
+        help=f"Server TCP port (default: {DEFAULT_PORT})",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=False)
@@ -33,7 +33,9 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("list", help="List all files on server")
 
-    search_parser = subparsers.add_parser("search", help="Search server files by keyword")
+    search_parser = subparsers.add_parser(
+        "search", help="Search server files by keyword"
+    )
     search_parser.add_argument("keyword", help="Keyword to match in filenames")
 
     download_parser = subparsers.add_parser("download", help="Download a server file")
@@ -158,7 +160,9 @@ def send_file_contents(sock: socket.socket, file_path: Path) -> int:
     return sent
 
 
-def recv_file_contents(sock: socket.socket, output_path: Path, expected_size: int) -> int:
+def recv_file_contents(
+    sock: socket.socket, output_path: Path, expected_size: int
+) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     received = 0
     with output_path.open("wb") as f:
@@ -199,7 +203,9 @@ def upload_file(host: str, port: int, file_path: Path) -> dict:
         return recv_json_header(sock)
 
 
-def download_file(host: str, port: int, filename: str, output_path: Path) -> tuple[dict, int]:
+def download_file(
+    host: str, port: int, filename: str, output_path: Path
+) -> tuple[dict, int]:
     with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT_SECONDS) as sock:
         sock.settimeout(SOCKET_TIMEOUT_SECONDS)
         send_json_header(sock, {"command": "DOWNLOAD", "filename": filename})
@@ -229,7 +235,9 @@ def run_command(args: argparse.Namespace, command: str, host: str, port: int) ->
     if command == "upload":
         raw_file_path = getattr(args, "file_path", None)
         if raw_file_path is None:
-            raw_file_path = input("Enter local file path (you can drag file here): ").strip()
+            raw_file_path = input(
+                "Enter local file path (you can drag file here): "
+            ).strip()
         file_path = resolve_file_path(raw_file_path)
         validate_file(file_path)
         response = upload_file(host, port, file_path)
@@ -291,7 +299,9 @@ def run_command(args: argparse.Namespace, command: str, host: str, port: int) ->
 def main() -> None:
     args = parse_args()
     interactive_mode = args.command is None
-    host, port = resolve_server_target(args.host, args.port, interactive=interactive_mode)
+    host, port = resolve_server_target(
+        args.host, args.port, interactive=interactive_mode
+    )
     command = args.command if args.command else prompt_command()
     run_command(args, command, host, port)
 
@@ -304,7 +314,9 @@ if __name__ == "__main__":
     except socket.timeout:
         raise SystemExit(f"Error: socket timed out after {SOCKET_TIMEOUT_SECONDS}s")
     except ConnectionRefusedError:
-        raise SystemExit("Error: connection refused. Check server IP/port and server status.")
+        raise SystemExit(
+            "Error: connection refused. Check server IP/port and server status."
+        )
     except socket.gaierror as e:
         raise SystemExit(f"Error: cannot resolve server host: {e}")
     except OSError as e:

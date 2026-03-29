@@ -1,0 +1,7 @@
+Client A ----\
+              \
+Client B ------> Server Main Thread ---> accept()
+              /                           |
+Client C ----/                            +--> Thread A (serve_client)
+                                          +--> Thread B (serve_client)
+                                          +--> Thread C (serve_client)
