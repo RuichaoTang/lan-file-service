@@ -1,6 +1,10 @@
 .DS_Store
 # shared folder
 shared/
+downloads/
+
+# temporary files
+web/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
