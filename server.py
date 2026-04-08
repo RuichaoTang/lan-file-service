@@ -9,7 +9,7 @@ HOST = "0.0.0.0"  # Listen on all network interfaces
 PORT = 5001
 BACKLOG = 5  # Max queued connections before accept()
 HEADER_MAX_BYTES = 4096
-CHUNK_SIZE = 4096
+CHUNK_SIZE = 65536
 SHARED_DIR = Path(__file__).resolve().parent / "shared"
 CLIENT_TIMEOUT_SECONDS = 30
 
@@ -239,6 +239,18 @@ def handle_download(client_socket: socket.socket, header: dict) -> None:
     print(f"DOWNLOAD OK: sent {sent} bytes for {source.name}")
 
 
+def handle_delete(client_socket: socket.socket, header: dict) -> None:
+    filename = validate_plain_filename(header.get("filename"))
+    path = get_existing_file_path(filename)
+    size = path.stat().st_size
+    path.unlink()
+    print(f"DELETE OK: removed {filename} ({size} bytes)")
+    safe_send_json(
+        client_socket,
+        {"status": "OK", "command": "DELETE", "filename": filename, "size": size},
+    )
+
+
 def handle_client(client_socket: socket.socket, client_addr: tuple) -> None:
     header = recv_json_header(client_socket)
     command = parse_command(header)
@@ -251,6 +263,8 @@ def handle_client(client_socket: socket.socket, client_addr: tuple) -> None:
         handle_search(client_socket, header)
     elif command == "DOWNLOAD":
         handle_download(client_socket, header)
+    elif command == "DELETE":
+        handle_delete(client_socket, header)
     else:
         raise ValueError(f"Unsupported command: {command}")
 

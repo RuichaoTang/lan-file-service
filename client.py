@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shlex
 import socket
+import time
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -45,6 +46,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Local output path (default: ./downloads/<filename>)",
     )
+
+    delete_parser = subparsers.add_parser("delete", help="Delete a server file")
+    delete_parser.add_argument("filename", help="Filename to delete on server")
 
     return parser.parse_args()
 
@@ -105,8 +109,8 @@ def resolve_server_target(
 
 
 def prompt_command() -> str:
-    typed = input("Choose command [upload/list/search/download]: ").strip().lower()
-    if typed not in {"upload", "list", "search", "download"}:
+    typed = input("Choose command [upload/list/search/download/delete]: ").strip().lower()
+    if typed not in {"upload", "list", "search", "download", "delete"}:
         raise ValueError("Command must be one of: upload, list, search, download.")
     return typed
 
@@ -149,6 +153,7 @@ def recv_json_header(sock: socket.socket) -> dict:
 
 
 def send_file_contents(sock: socket.socket, file_path: Path) -> int:
+    total = file_path.stat().st_size
     sent = 0
     with file_path.open("rb") as f:
         while True:
@@ -157,6 +162,10 @@ def send_file_contents(sock: socket.socket, file_path: Path) -> int:
                 break
             sock.sendall(chunk)
             sent += len(chunk)
+            if total > 0:
+                print(f"\rUploading: {sent/total*100:.1f}%", end="", flush=True)
+    if total > 0:
+        print()
     return sent
 
 
@@ -175,6 +184,10 @@ def recv_file_contents(
                 )
             f.write(chunk)
             received += len(chunk)
+            if expected_size > 0:
+                print(f"\rDownloading: {received/expected_size*100:.1f}%", end="", flush=True)
+    if expected_size > 0:
+        print()
     return received
 
 
@@ -185,7 +198,18 @@ def send_request(host: str, port: int, header: dict) -> dict:
         return recv_json_header(sock)
 
 
-def upload_file(host: str, port: int, file_path: Path) -> dict:
+def format_speed(byte_count: int, elapsed: float) -> str:
+    if elapsed <= 0:
+        return "N/A"
+    speed = byte_count / elapsed
+    if speed >= 1_000_000:
+        return f"{speed / 1_000_000:.2f} MB/s"
+    if speed >= 1_000:
+        return f"{speed / 1_000:.2f} KB/s"
+    return f"{speed:.0f} B/s"
+
+
+def upload_file(host: str, port: int, file_path: Path) -> tuple[dict, float]:
     filename = file_path.name
     filesize = file_path.stat().st_size
 
@@ -195,17 +219,19 @@ def upload_file(host: str, port: int, file_path: Path) -> dict:
             sock,
             {"command": "UPLOAD", "filename": filename, "size": filesize},
         )
+        t0 = time.time()
         bytes_sent = send_file_contents(sock, file_path)
+        elapsed = time.time() - t0
         if bytes_sent != filesize:
             raise ValueError(
                 f"Sent size mismatch: expected {filesize}, sent {bytes_sent}"
             )
-        return recv_json_header(sock)
+        return recv_json_header(sock), elapsed
 
 
 def download_file(
     host: str, port: int, filename: str, output_path: Path
-) -> tuple[dict, int]:
+) -> tuple[dict, int, float]:
     with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT_SECONDS) as sock:
         sock.settimeout(SOCKET_TIMEOUT_SECONDS)
         send_json_header(sock, {"command": "DOWNLOAD", "filename": filename})
@@ -215,8 +241,10 @@ def download_file(
         if not isinstance(size, int) or size < 0:
             raise ValueError("Invalid DOWNLOAD response: missing valid 'size'.")
 
+        t0 = time.time()
         received = recv_file_contents(sock, output_path, size)
-        return header, received
+        elapsed = time.time() - t0
+        return header, received, elapsed
 
 
 def print_files(title: str, files: list[dict]) -> None:
@@ -240,11 +268,12 @@ def run_command(args: argparse.Namespace, command: str, host: str, port: int) ->
             ).strip()
         file_path = resolve_file_path(raw_file_path)
         validate_file(file_path)
-        response = upload_file(host, port, file_path)
+        response, elapsed = upload_file(host, port, file_path)
         print(
             "UPLOAD OK:",
             f"{response['filename']} -> {response['stored_as']} ({response['size']} bytes)",
         )
+        print(f"Transfer speed: {format_speed(response['size'], elapsed)} ({elapsed:.3f}s)")
         return
 
     if command == "list":
@@ -289,8 +318,20 @@ def run_command(args: argparse.Namespace, command: str, host: str, port: int) ->
             if output_value
             else (Path.cwd() / "downloads" / filename)
         )
-        _, received = download_file(host, port, filename, output_path)
+        _, received, elapsed = download_file(host, port, filename, output_path)
         print(f"DOWNLOAD OK: {filename} -> {output_path} ({received} bytes)")
+        print(f"Transfer speed: {format_speed(received, elapsed)} ({elapsed:.3f}s)")
+        return
+
+    if command == "delete":
+        filename = getattr(args, "filename", None)
+        if filename is None:
+            filename = input("Enter filename to delete: ").strip()
+        filename = filename.strip()
+        if not filename:
+            raise ValueError("Filename must be non-empty.")
+        response = send_request(host, port, {"command": "DELETE", "filename": filename})
+        print(f"DELETE OK: {response['filename']} ({response['size']} bytes)")
         return
 
     raise ValueError(f"Unsupported command: {command}")
